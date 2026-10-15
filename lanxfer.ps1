@@ -5,9 +5,36 @@
 #   $env:LANXFER_PORT = 8765        HTTP portu
 #   $env:LANXFER_DIR  = 'D:\Gelen'  gelen dosyalarin klasoru
 #   $env:LANXFER_NOBROWSER = 1      uygulama penceresini acma
+#   $env:LANXFER_LANG = 'en'        dil: tr / en (varsayilan: Windows dili)
 & {
 $ErrorActionPreference = 'Stop'
-$Version = '1.0.0'
+$Version = '1.1.0'
+$Lang    = if ($env:LANXFER_LANG) { $env:LANXFER_LANG.ToLowerInvariant() } elseif ((Get-Culture).TwoLetterISOLanguageName -eq 'tr') { 'tr' } else { 'en' }
+if ($Lang -notin 'tr', 'en') { $Lang = 'en' }
+$Text = @{
+    tr = @{
+        ui = 'Arayüz'; inbox = 'Gelen klasörü'; cable = 'kablo'; offline = 'İnternetsiz PC için: '
+        fwOk = 'Güvenlik duvarı: geçici izin eklendi'
+        fwWarn = 'Güvenlik duvarı uyarısı çıkarsa "Ortak/Public" ağlar için de izin verin (veya PowerShell''i yönetici olarak açın).'
+        quit = 'Kapatmak için LanXfer penceresini kapatın veya Ctrl+C'
+        portBusy = 'Port {0} kullanılamıyor (LanXfer zaten açık olabilir). Başka port için: $env:LANXFER_PORT = 8800'
+        winClosed = 'Pencere kapatıldı.'; stopped = 'LanXfer kapatıldı.'
+        peer = 'Karşı PC bulundu: {0} ({1})'; served = 'Betik {0} adresine verildi'
+        sent = 'GÖNDERİLDİ -> {0} : {1}'; recv = 'ALINDI <- {0} : {1} ({2:N1} MB)'; partial = 'YARIM KALDI <- {0} : {1}'
+        err = 'HATA: {0}'; lang = 'Dil: Türkçe'
+    }
+    en = @{
+        ui = 'Interface'; inbox = 'Inbox folder'; cable = 'cable'; offline = 'For a PC without internet: '
+        fwOk = 'Firewall: temporary rule added'
+        fwWarn = 'If a firewall prompt appears, allow "Public" networks too (or run PowerShell as Administrator).'
+        quit = 'Close the LanXfer window or press Ctrl+C to quit'
+        portBusy = 'Port {0} is unavailable (LanXfer may already be running). For another port: $env:LANXFER_PORT = 8800'
+        winClosed = 'Window closed.'; stopped = 'LanXfer stopped.'
+        peer = 'Found peer: {0} ({1})'; served = 'Script sent to {0}'
+        sent = 'SENT -> {0} : {1}'; recv = 'RECEIVED <- {0} : {1} ({2:N1} MB)'; partial = 'INCOMPLETE <- {0} : {1}'
+        err = 'ERROR: {0}'; lang = 'Language: English'
+    }
+}
 $Port    = if ($env:LANXFER_PORT) { [int]$env:LANXFER_PORT } else { 8765 }
 $UdpPort = if ($env:LANXFER_UDP)  { [int]$env:LANXFER_UDP }  else { 8766 }
 $Share   = if ($env:LANXFER_DIR)  { $env:LANXFER_DIR } else { Join-Path $env:USERPROFILE 'Downloads\LanXfer' }
@@ -46,6 +73,7 @@ $Handler = {
     $ns = $null
 
     function Log([string]$Msg) { $S.Log.Enqueue(('[{0:HH:mm:ss}] {1}' -f (Get-Date), $Msg)) }
+    function T([string]$Key) { $S.Text[$S.Lang][$Key] }
 
     function Head([int]$Code, [string]$Type, [long]$Len, [string]$Extra = '') {
         $reason = @{ 200 = 'OK'; 204 = 'No Content'; 400 = 'Bad Request'; 403 = 'Forbidden'; 404 = 'Not Found'; 500 = 'Internal Server Error' }[$Code]
@@ -147,10 +175,11 @@ $Handler = {
         }
         elseif ($method -eq 'GET' -and ($path -eq '/s' -or $path -eq '/lanxfer.ps1')) {
             Reply 200 'text/plain; charset=utf-8' $S.Self
-            Log "Betik $remote adresine verildi"
+            Log ((T 'served') -f $remote)
         }
         elseif ($method -eq 'GET' -and $path -eq '/api/info') {
             Json @{
+                lang    = $S.Lang
                 name    = $S.Name
                 id      = $S.Id
                 port    = $S.Port
@@ -183,7 +212,7 @@ $Handler = {
         elseif ($method -eq 'GET' -and $path -eq '/dl') {
             $rel  = SafeRel $q['n']
             $full = if ($rel) { InShare $rel }
-            if (-not $full -or -not [IO.File]::Exists($full)) { Json @{ error = 'Dosya bulunamadi' } 404; return }
+            if (-not $full -or -not [IO.File]::Exists($full)) { Json @{ error = 'File not found' } 404; return }
             $fs = [IO.FileStream]::new($full, 'Open', 'Read', 'ReadWrite', 1MB)
             try {
                 $fn = [Uri]::EscapeDataString([IO.Path]::GetFileName($full))
@@ -191,13 +220,13 @@ $Handler = {
                 $fs.CopyTo($ns, 1MB)
             }
             finally { $fs.Dispose() }
-            Log "GONDERILDI -> $remote : $rel"
+            Log ((T 'sent') -f $remote, $rel)
         }
         elseif ($method -eq 'PUT' -and $path -eq '/up') {
             $rel = SafeRel $q['name']
-            if (-not $rel -or -not $hd.ContainsKey('content-length')) { Json @{ error = 'Gecersiz istek' } 400; return }
+            if (-not $rel -or -not $hd.ContainsKey('content-length')) { Json @{ error = 'Bad request' } 400; return }
             $dest = InShare $rel
-            if (-not $dest) { Json @{ error = 'Gecersiz yol' } 403; return }
+            if (-not $dest) { Json @{ error = 'Invalid path' } 403; return }
             $len  = [long]$hd['content-length']
             $dest = UniquePath $dest
             [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($dest))
@@ -214,7 +243,7 @@ $Handler = {
                 if ($pre -gt 0) { $fs.Write($raw, $end + 4, [int]$pre); $left -= $pre }
                 while ($left -gt 0) {
                     $n = $ns.Read($buf, 0, [int][Math]::Min([long]$buf.Length, $left))
-                    if ($n -le 0) { throw 'Baglanti koptu' }
+                    if ($n -le 0) { throw 'Connection closed' }
                     $fs.Write($buf, 0, $n)
                     $left -= $n
                 }
@@ -224,24 +253,29 @@ $Handler = {
                 $fs.Dispose()
                 if (-not $ok) {
                     Remove-Item -LiteralPath $part -Force -ErrorAction SilentlyContinue
-                    Log "YARIM KALDI <- $remote : $rel"
+                    Log ((T 'partial') -f $remote, $rel)
                 }
             }
             [IO.File]::Move($part, $dest)
-            Log ("ALINDI <- {0} : {1} ({2:N1} MB)" -f $remote, $rel, ($len / 1MB))
+            Log ((T 'recv') -f $remote, $rel, ($len / 1MB))
             Json @{ ok = $true; name = $dest.Substring($S.Share.Length + 1).Replace('\', '/') }
         }
         elseif ($method -eq 'POST' -and $path -eq '/api/open') {
-            if (-not $isLocal) { Json @{ error = 'Sadece bu PC' } 403; return }
+            if (-not $isLocal) { Json @{ error = 'Local only' } 403; return }
             Start-Process explorer.exe -ArgumentList "`"$($S.Share)`""
             Json @{ ok = $true }
         }
+        elseif ($method -eq 'POST' -and $path -eq '/api/lang') {
+            if (-not $isLocal) { Json @{ error = 'Local only' } 403; return }
+            if ($q['l'] -in 'tr', 'en' -and $q['l'] -ne $S.Lang) { $S.Lang = $q['l']; Log (T 'lang') }
+            Json @{ ok = $true }
+        }
         else {
-            Json @{ error = 'Bulunamadi' } 404
+            Json @{ error = 'Not found' } 404
         }
     }
     catch {
-        Log "HATA: $($_.Exception.Message)"
+        Log ((T 'err') -f $_.Exception.Message)
     }
     finally {
         if ($ns) { $ns.Dispose() }
@@ -282,7 +316,7 @@ $Discovery = {
                 if ($p.Count -eq 4 -and $p[0] -eq 'LANXFER1' -and $p[1] -ne $S.Id) {
                     $ip = $ep.Address.ToString()
                     $key = "${ip}:$($p[2])"
-                    if (-not $S.Peers.ContainsKey($key)) { $S.Log.Enqueue(('[{0:HH:mm:ss}] Karsi PC bulundu: {1} ({2})' -f (Get-Date), $p[3], $key)) }
+                    if (-not $S.Peers.ContainsKey($key)) { $S.Log.Enqueue(('[{0:HH:mm:ss}] ' -f (Get-Date)) + ($S.Text[$S.Lang].peer -f $p[3], $key)) }
                     $S.Peers[$key] = @{ ip = $ip; port = [int]$p[2]; id = $p[1]; name = $p[3]; seen = [DateTime]::UtcNow.Ticks }
                 }
             }
@@ -373,43 +407,48 @@ a:hover{text-decoration:underline}
 code{font-family:Consolas,monospace;background:var(--chip);padding:7px 10px;border-radius:8px;display:inline-block;word-break:break-all}
 .cmds{display:flex;flex-direction:column;gap:6px}
 .sum{font-size:13px;color:var(--muted);margin-top:8px}
+.lang{display:flex;background:var(--chip);border-radius:999px;padding:3px}
+.lang button{background:none;color:var(--muted);padding:4px 10px;border-radius:999px;font-size:12px}
+.lang button:hover{background:none;color:var(--text)}
+.lang button.on{background:var(--accent);color:#fff}
 </style>
 </head>
 <body>
 <div class="wrap">
   <header>
     <div class="logo">⇄</div>
-    <div><h1>LanXfer</h1><div class="sub">Kablo ile iki bilgisayar arasında dosya aktarımı</div></div>
-    <div class="pill"><span class="dot" id="statDot"></span><span id="statTxt">Bağlı değil</span></div>
+    <div><h1>LanXfer</h1><div class="sub" data-i="sub"></div></div>
+    <div class="pill"><span class="dot" id="statDot"></span><span id="statTxt"></span></div>
+    <div class="lang" id="lang"><button data-l="tr">TR</button><button data-l="en">EN</button></div>
   </header>
 
   <div class="grid">
     <div class="card">
-      <h2>Bu bilgisayar</h2>
+      <h2 data-i="thisPc"></h2>
       <div class="big" id="meName">…</div>
       <div class="chips" id="meAddrs"></div>
-      <div class="sum">Gelen dosyalar: <span id="meShare" class="muted">…</span></div>
+      <div class="sum"><span data-i="incoming"></span> <span id="meShare" class="muted">…</span></div>
     </div>
     <div class="card">
-      <h2>Karşı bilgisayar</h2>
-      <div class="peers" id="peers"><div class="muted">Aranıyor… (karşı PC'de de LanXfer açık olmalı)</div></div>
+      <h2 data-i="otherPc"></h2>
+      <div class="peers" id="peers"></div>
       <div class="row">
-        <input id="ipIn" placeholder="IP adresi (ör. 169.254.12.34)" style="flex:1">
+        <input id="ipIn" data-ph="ipPh" style="flex:1">
         <input id="portIn" value="8765" style="width:80px">
-        <button id="connBtn">Bağlan</button>
+        <button id="connBtn" data-i="connect"></button>
       </div>
       <div class="msg" id="connMsg"></div>
     </div>
   </div>
 
   <div class="card" style="margin-bottom:14px">
-    <h2>Gönder <span class="sp"></span><span id="sendTo" class="muted" style="text-transform:none;letter-spacing:0"></span></h2>
+    <h2><span data-i="send"></span> <span class="sp"></span><span id="sendTo" class="muted" style="text-transform:none;letter-spacing:0"></span></h2>
     <div class="drop off" id="drop">
-      <div class="t">Dosya veya klasörleri buraya sürükleyip bırakın</div>
-      <div class="muted" id="dropHint">Önce karşı bilgisayara bağlanın</div>
+      <div class="t" data-i="dropTitle"></div>
+      <div class="muted" id="dropHint"></div>
       <div class="row">
-        <button id="pickFiles" disabled>Dosya seç</button>
-        <button id="pickDir" class="ghost" disabled>Klasör seç</button>
+        <button id="pickFiles" data-i="pickFiles" disabled></button>
+        <button id="pickDir" class="ghost" data-i="pickDir" disabled></button>
       </div>
       <input type="file" id="fileIn" multiple hidden>
       <input type="file" id="dirIn" webkitdirectory hidden>
@@ -419,28 +458,79 @@ code{font-family:Consolas,monospace;background:var(--chip);padding:7px 10px;bord
 
   <div class="grid">
     <div class="card">
-      <h2>Gelen kutusu (bu PC) <span class="sp"></span><button class="ghost small" id="openBtn">Klasörü aç</button></h2>
+      <h2><span data-i="inboxTitle"></span> <span class="sp"></span><button class="ghost small" id="openBtn" data-i="openFolder"></button></h2>
       <div class="list" id="myFiles"></div>
     </div>
     <div class="card">
-      <h2>Karşı PC'deki dosyalar <span class="sp"></span></h2>
-      <div class="list" id="peerFiles"><div class="empty">Bağlantı yok</div></div>
+      <h2><span data-i="peerFilesTitle"></span> <span class="sp"></span></h2>
+      <div class="list" id="peerFiles"></div>
     </div>
   </div>
 
   <div class="card">
-    <h2>Karşı PC'de internet yok mu?</h2>
-    <div class="muted" style="margin-bottom:10px">Kabloyu taktıktan sonra karşı PC'de PowerShell açıp aşağıdakilerden birini çalıştırın — LanXfer bu bilgisayardan indirilip RAM'de çalışır:</div>
+    <h2 data-i="offlineTitle"></h2>
+    <div class="muted" style="margin-bottom:10px" data-i="offlineText"></div>
     <div class="cmds" id="cmds"></div>
   </div>
 </div>
 
 <script>
+const I18N = {
+  tr: {
+    sub: 'Kablo ile iki bilgisayar arasında dosya aktarımı', notConnected: 'Bağlı değil', connectedTo: 'Bağlı: {0} ({1})',
+    thisPc: 'Bu bilgisayar', incoming: 'Gelen dosyalar:', otherPc: 'Karşı bilgisayar',
+    searching: "Aranıyor… (karşı PC'de de LanXfer açık olmalı)", ipPh: 'IP adresi (ör. 169.254.12.34)', connect: 'Bağlan',
+    send: 'Gönder', dropTitle: 'Dosya veya klasörleri buraya sürükleyip bırakın', dropOff: 'Önce karşı bilgisayara bağlanın',
+    dropOn: 'Dosyalar {0} bilgisayarının gelen kutusuna gider', pickFiles: 'Dosya seç', pickDir: 'Klasör seç',
+    inboxTitle: 'Gelen kutusu (bu PC)', openFolder: 'Klasörü aç', peerFilesTitle: "Karşı PC'deki dosyalar", noConn: 'Bağlantı yok',
+    offlineTitle: "Karşı PC'de internet yok mu?",
+    offlineText: "Kabloyu taktıktan sonra karşı PC'de PowerShell açıp aşağıdakilerden birini çalıştırın — LanXfer bu bilgisayardan indirilip RAM'de çalışır:",
+    copy: 'Kopyala', copied: 'Kopyalandı', cable: 'kablo', noNetwork: 'Ağ bağlantısı yok', connecting: 'Bağlanılıyor…',
+    connectedMsg: '{0} bilgisayarına bağlanıldı.', selfAddr: 'Bu adres bu bilgisayarın kendisi.',
+    unreachable: "{0} adresine ulaşılamadı. Karşı PC'de LanXfer açık mı? Güvenlik duvarı izin verdi mi?",
+    peerEmpty: "Karşı PC'nin gelen kutusu boş", inboxEmpty: 'Henüz dosya gelmedi', connLost: 'Bağlantı koptu',
+    queued: 'Sırada · {0}', cancel: 'İptal', cancelled: 'İptal edildi', remove: 'Kaldır', sent: 'Gönderildi · {0} · {1}/s',
+    httpErr: 'Hata: HTTP {0}', netErr: 'Bağlantı hatası', sec: 'sn', min: 'dk', locale: 'tr-TR'
+  },
+  en: {
+    sub: 'File transfer between two computers over a cable', notConnected: 'Not connected', connectedTo: 'Connected: {0} ({1})',
+    thisPc: 'This computer', incoming: 'Incoming files:', otherPc: 'Other computer',
+    searching: 'Searching… (LanXfer must be running on the other PC too)', ipPh: 'IP address (e.g. 169.254.12.34)', connect: 'Connect',
+    send: 'Send', dropTitle: 'Drag and drop files or folders here', dropOff: 'Connect to the other computer first',
+    dropOn: "Files go to {0}'s inbox", pickFiles: 'Choose files', pickDir: 'Choose folder',
+    inboxTitle: 'Inbox (this PC)', openFolder: 'Open folder', peerFilesTitle: 'Files on the other PC', noConn: 'Not connected',
+    offlineTitle: 'No internet on the other PC?',
+    offlineText: 'After plugging in the cable, open PowerShell on the other PC and run one of these — LanXfer is downloaded from this computer and runs in memory:',
+    copy: 'Copy', copied: 'Copied', cable: 'cable', noNetwork: 'No network connection', connecting: 'Connecting…',
+    connectedMsg: 'Connected to {0}.', selfAddr: 'That address is this computer.',
+    unreachable: "Couldn't reach {0}. Is LanXfer running on the other PC? Did the firewall allow it?",
+    peerEmpty: "The other PC's inbox is empty", inboxEmpty: 'No files received yet', connLost: 'Connection lost',
+    queued: 'Queued · {0}', cancel: 'Cancel', cancelled: 'Cancelled', remove: 'Remove', sent: 'Sent · {0} · {1}/s',
+    httpErr: 'Error: HTTP {0}', netErr: 'Connection error', sec: 's', min: 'min', locale: 'en-GB'
+  }
+};
+let lang = 'en';
+const t = (k, ...a) => (I18N[lang][k] ?? k).replace(/\{(\d)\}/g, (_, i) => a[i]);
+
 const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmtSize = b => { const u=['B','KB','MB','GB','TB']; let i=0; while (b>=1024 && i<u.length-1){b/=1024;i++} return (i?b.toFixed(b<10?2:1):b)+' '+u[i]; };
-const fmtTime = ms => { const d=new Date(ms); return d.toLocaleDateString('tr-TR')+' '+d.toLocaleTimeString('tr-TR',{hour:'2-digit',minute:'2-digit'}); };
-const fmtEta = s => !isFinite(s) ? '' : s<60 ? Math.ceil(s)+' sn' : Math.floor(s/60)+' dk '+Math.ceil(s%60)+' sn';
+const fmtTime = ms => { const d=new Date(ms); return d.toLocaleDateString(t('locale'))+' '+d.toLocaleTimeString(t('locale'),{hour:'2-digit',minute:'2-digit'}); };
+const fmtEta = s => !isFinite(s) ? '' : s<60 ? Math.ceil(s)+' '+t('sec') : Math.floor(s/60)+' '+t('min')+' '+Math.ceil(s%60)+' '+t('sec');
+
+function setLang(l, tellServer) {
+  lang = I18N[l] ? l : 'en';
+  document.documentElement.lang = lang;
+  document.querySelectorAll('[data-i]').forEach(el => el.textContent = t(el.dataset.i));
+  document.querySelectorAll('[data-ph]').forEach(el => el.placeholder = t(el.dataset.ph));
+  document.querySelectorAll('#lang button').forEach(b => b.classList.toggle('on', b.dataset.l === lang));
+  try { localStorage.setItem('lanxfer.lang', lang); } catch {}
+  if (tellServer) fetch('/api/lang?l=' + lang, {method: 'POST'}).catch(() => {});
+  setStatus(); renderPeers(lastPeers); if (me) renderMe();
+  if (!peer) $('#peerFiles').innerHTML = `<div class="empty">${t('noConn')}</div>`;
+  if (myFiles) renderFiles($('#myFiles'), myFiles, false);
+  refreshMine(); refreshPeerFiles();
+}
 
 let me = null, peer = null, peerFails = 0;
 const base = () => `http://${peer.ip}:${peer.port}`;
@@ -453,42 +543,44 @@ async function getJson(url, ms = 4000) {
 
 function setStatus() {
   $('#statDot').classList.toggle('on', !!peer);
-  $('#statTxt').textContent = peer ? `Bağlı: ${peer.name} (${peer.ip})` : 'Bağlı değil';
+  $('#statTxt').textContent = peer ? t('connectedTo', peer.name, peer.ip) : t('notConnected');
   $('#sendTo').textContent = peer ? `→ ${peer.name}` : '';
   $('#drop').classList.toggle('off', !peer);
-  $('#dropHint').textContent = peer ? `Dosyalar ${peer.name} bilgisayarının gelen kutusuna gider` : 'Önce karşı bilgisayara bağlanın';
+  $('#dropHint').textContent = peer ? t('dropOn', peer.name) : t('dropOff');
   $('#pickFiles').disabled = $('#pickDir').disabled = !peer;
 }
 
 async function loadMe() {
   me = await getJson('/api/info');
+  renderMe();
+}
+function renderMe() {
   $('#meName').textContent = me.name;
   $('#meShare').textContent = me.share;
   $('#meAddrs').innerHTML = me.addrs.map(a =>
-    `<span class="chip" title="${esc(a.adapter)}">${esc(a.ip)}${a.linkLocal ? '<b>kablo</b>' : ''}</span>`).join('') || '<span class="muted">Ağ bağlantısı yok</span>';
+    `<span class="chip" title="${esc(a.adapter)}">${esc(a.ip)}${a.linkLocal ? `<b>${t('cable')}</b>` : ''}</span>`).join('') || `<span class="muted">${t('noNetwork')}</span>`;
   const ips = me.addrs.slice().sort((a, b) => b.linkLocal - a.linkLocal);
   $('#cmds').innerHTML = ips.map(a => {
     const c = `irm http://${a.ip}:${me.port}/s | iex`;
-    return `<div class="row"><code>${esc(c)}</code><button class="ghost small" data-c="${esc(c)}">Kopyala</button></div>`;
+    return `<div class="row"><code>${esc(c)}</code><button class="ghost small" data-c="${esc(c)}">${t('copy')}</button></div>`;
   }).join('');
 }
 
 async function connect(ip, port, quiet) {
   const msg = $('#connMsg');
-  if (!quiet) { msg.className = 'msg'; msg.textContent = 'Bağlanılıyor…'; }
+  if (!quiet) { msg.className = 'msg'; msg.textContent = t('connecting'); }
   try {
     const info = await getJson(`http://${ip}:${port}/api/info`, 3500);
     if (me && info.id === me.id) throw new Error('self');
     peer = {ip, port, name: info.name, id: info.id}; peerFails = 0;
     try { localStorage.setItem('lanxfer.peer', JSON.stringify({ip, port})); } catch {}
-    msg.className = 'msg ok'; msg.textContent = `${info.name} bilgisayarına bağlanıldı.`;
+    msg.className = 'msg ok'; msg.textContent = t('connectedMsg', info.name);
     setStatus(); refreshPeerFiles(); renderPeers(lastPeers);
     return true;
   } catch (e) {
     if (!quiet) {
       msg.className = 'msg err';
-      msg.textContent = e.message === 'self' ? 'Bu adres bu bilgisayarın kendisi.' :
-        `${ip}:${port} adresine ulaşılamadı. Karşı PC'de LanXfer açık mı? Güvenlik duvarı izin verdi mi?`;
+      msg.textContent = e.message === 'self' ? t('selfAddr') : t('unreachable', `${ip}:${port}`);
     }
     return false;
   }
@@ -498,18 +590,18 @@ let lastPeers = [];
 function renderPeers(list) {
   lastPeers = list;
   const box = $('#peers');
-  if (!list.length) { box.innerHTML = '<div class="muted">Aranıyor… (karşı PC\'de de LanXfer açık olmalı)</div>'; return; }
+  if (!list.length) { box.innerHTML = `<div class="muted">${t('searching')}</div>`; return; }
   list.sort((a, b) => b.ip.startsWith('169.254.') - a.ip.startsWith('169.254.'));
   box.innerHTML = list.map(p => {
     const sel = peer && peer.ip === p.ip && +peer.port === +p.port;
     return `<button class="peer${sel ? ' sel' : ''}" data-ip="${esc(p.ip)}" data-port="${p.port}">
-      <span>🖥️</span><span class="n">${esc(p.name)}</span>${p.ip.startsWith('169.254.') ? '<span class="chip"><b style="margin:0">kablo</b></span>' : ''}
+      <span>🖥️</span><span class="n">${esc(p.name)}</span>${p.ip.startsWith('169.254.') ? `<span class="chip"><b style="margin:0">${t('cable')}</b></span>` : ''}
       <span class="ip">${esc(p.ip)}:${p.port}</span></button>`;
   }).join('');
 }
 
 function renderFiles(el, files, remote) {
-  if (!files.length) { el.innerHTML = `<div class="empty">${remote ? 'Karşı PC\'nin gelen kutusu boş' : 'Henüz dosya gelmedi'}</div>`; return; }
+  if (!files.length) { el.innerHTML = `<div class="empty">${t(remote ? 'peerEmpty' : 'inboxEmpty')}</div>`; return; }
   el.innerHTML = '<table>' + files.map(f => {
     const nm = remote ? `<a href="${base()}/dl?n=${encodeURIComponent(f.name)}" download>${esc(f.name)}</a>`
                       : `<a href="/dl?n=${encodeURIComponent(f.name)}" download>${esc(f.name)}</a>`;
@@ -517,7 +609,8 @@ function renderFiles(el, files, remote) {
   }).join('') + '</table>';
 }
 
-async function refreshMine() { try { renderFiles($('#myFiles'), (await getJson('/api/files')).files, false); } catch {} }
+let myFiles = null;
+async function refreshMine() { try { myFiles = (await getJson('/api/files')).files; renderFiles($('#myFiles'), myFiles, false); } catch {} }
 async function refreshPeers() {
   try {
     const list = (await getJson('/api/peers')).peers;
@@ -532,7 +625,7 @@ async function refreshPeerFiles() {
   if (!peer) return;
   try { renderFiles($('#peerFiles'), (await getJson(base() + '/api/files')).files, true); peerFails = 0; }
   catch {
-    if (++peerFails >= 3) { peer = null; setStatus(); $('#peerFiles').innerHTML = '<div class="empty">Bağlantı koptu</div>'; renderPeers(lastPeers); }
+    if (++peerFails >= 3) { peer = null; setStatus(); $('#peerFiles').innerHTML = `<div class="empty">${t('connLost')}</div>`; renderPeers(lastPeers); }
   }
 }
 
@@ -543,9 +636,9 @@ function enqueue(items) {
   for (const it of items) {
     it.state = 'wait'; it.peer = {...peer};
     it.el = document.createElement('div'); it.el.className = 'job';
-    it.el.innerHTML = `<div class="top"><span class="nm"></span><span class="st">Sırada · ${fmtSize(it.file.size)}</span><button class="x" title="İptal">✕</button></div><div class="bar"><i></i></div>`;
+    it.el.innerHTML = `<div class="top"><span class="nm"></span><span class="st">${t('queued', fmtSize(it.file.size))}</span><button class="x" title="${t('cancel')}">✕</button></div><div class="bar"><i></i></div>`;
     it.el.querySelector('.nm').textContent = it.rel;
-    it.el.querySelector('.x').onclick = () => { if (it.xhr) it.xhr.abort(); else if (it.state === 'wait') { it.state = 'cancel'; setJob(it, 'İptal edildi', 0, true); } };
+    it.el.querySelector('.x').onclick = () => { if (it.xhr) it.xhr.abort(); else if (it.state === 'wait') { it.state = 'cancel'; setJob(it, t('cancelled'), 0, true); } };
     $('#queue').prepend(it.el); queue.push(it);
   }
   pump();
@@ -554,7 +647,7 @@ function setJob(it, text, pct, fail, done) {
   it.el.querySelector('.st').textContent = text;
   it.el.querySelector('.bar i').style.width = pct + '%';
   it.el.classList.toggle('fail', !!fail); it.el.classList.toggle('done', !!done);
-  if (fail || done) { const x = it.el.querySelector('.x'); x.onclick = () => it.el.remove(); x.title = 'Kaldır'; }
+  if (fail || done) { const x = it.el.querySelector('.x'); x.onclick = () => it.el.remove(); x.title = t('remove'); }
 }
 function pump() {
   if (busy) return;
@@ -575,12 +668,12 @@ function send(it) {
     };
     x.onload = () => {
       const secs = (performance.now() - t0) / 1000;
-      if (x.status === 200) { it.state = 'done'; setJob(it, `Gönderildi · ${fmtSize(it.file.size)} · ${fmtSize(it.file.size / Math.max(secs, .001))}/s`, 100, false, true); refreshPeerFiles(); }
-      else { it.state = 'fail'; setJob(it, 'Hata: HTTP ' + x.status, 100, true); }
+      if (x.status === 200) { it.state = 'done'; setJob(it, t('sent', fmtSize(it.file.size), fmtSize(it.file.size / Math.max(secs, .001))), 100, false, true); refreshPeerFiles(); }
+      else { it.state = 'fail'; setJob(it, t('httpErr', x.status), 100, true); }
       res();
     };
-    x.onerror = () => { it.state = 'fail'; setJob(it, 'Bağlantı hatası', 100, true); res(); };
-    x.onabort = () => { it.state = 'fail'; setJob(it, 'İptal edildi', 0, true); res(); };
+    x.onerror = () => { it.state = 'fail'; setJob(it, t('netErr'), 100, true); res(); };
+    x.onabort = () => { it.state = 'fail'; setJob(it, t('cancelled'), 0, true); res(); };
     x.send(it.file);
   });
 }
@@ -615,11 +708,13 @@ $('#connBtn').onclick = () => { const ip = $('#ipIn').value.trim(); if (ip) conn
 $('#ipIn').onkeydown = e => { if (e.key === 'Enter') $('#connBtn').click(); };
 $('#peers').onclick = e => { const b = e.target.closest('.peer'); if (b) connect(b.dataset.ip, +b.dataset.port); };
 $('#openBtn').onclick = () => fetch('/api/open', {method: 'POST'});
-$('#cmds').onclick = e => { const b = e.target.closest('button[data-c]'); if (b) { navigator.clipboard.writeText(b.dataset.c); b.textContent = 'Kopyalandı'; setTimeout(() => b.textContent = 'Kopyala', 1500); } };
+$('#cmds').onclick = e => { const b = e.target.closest('button[data-c]'); if (b) { navigator.clipboard.writeText(b.dataset.c); b.textContent = t('copied'); setTimeout(() => b.textContent = t('copy'), 1500); } };
+$('#lang').onclick = e => { const b = e.target.closest('button[data-l]'); if (b) setLang(b.dataset.l, true); };
 
 (async () => {
-  setStatus();
   try { await loadMe(); } catch {}
+  let saved = null; try { saved = localStorage.getItem('lanxfer.lang'); } catch {}
+  setLang(saved || (me && me.lang) || (navigator.language || '').slice(0, 2), !!saved);
   try { const s = JSON.parse(localStorage.getItem('lanxfer.peer') || 'null'); if (s) connect(s.ip, s.port, true); } catch {}
   refreshMine(); refreshPeers();
   setInterval(() => { refreshMine(); refreshPeers(); refreshPeerFiles(); }, 2000);
@@ -641,10 +736,14 @@ $S = [hashtable]::Synchronized(@{
     Html    = $Html
     Self    = $Self
     AddrSrc = $AddrSrc
+    Lang    = $Lang
+    Text    = $Text
     Peers   = [hashtable]::Synchronized(@{})
     Stop    = $false
     Log     = [Collections.Concurrent.ConcurrentQueue[string]]::new()
 })
+
+function T([string]$Key) { $S.Text[$S.Lang][$Key] }
 
 [void][IO.Directory]::CreateDirectory($Share)
 try { $Host.UI.RawUI.WindowTitle = "LanXfer :$Port" } catch {}
@@ -652,7 +751,7 @@ try { $Host.UI.RawUI.WindowTitle = "LanXfer :$Port" } catch {}
 $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Any, $Port)
 try { $listener.Start() }
 catch {
-    Write-Host "Port $Port kullanilamiyor (LanXfer zaten acik olabilir). Baska port icin: `$env:LANXFER_PORT = 8800" -ForegroundColor Red
+    Write-Host ((T 'portBusy') -f $Port) -ForegroundColor Red
     return
 }
 
@@ -680,19 +779,19 @@ $discoH = $disco.BeginInvoke()
 $addrs = @(& ([scriptblock]::Create($AddrSrc)))
 Write-Host ''
 Write-Host '  LanXfer ' -ForegroundColor Cyan -NoNewline; Write-Host "v$Version  -  $($S.Name)"
-Write-Host "  Arayuz        : http://127.0.0.1:$Port/"
-Write-Host "  Gelen klasoru : $Share"
+Write-Host ("  {0,-14}: http://127.0.0.1:{1}/" -f (T 'ui'), $Port)
+Write-Host ("  {0,-14}: {1}" -f (T 'inbox'), $Share)
 foreach ($a in $addrs) {
-    $tag = if ($a.linkLocal) { '  <- kablo' } else { '' }
+    $tag = if ($a.linkLocal) { "  <- $(T 'cable')" } else { '' }
     Write-Host ("  {0,-15} ({1}){2}" -f $a.ip, $a.adapter, $tag) -ForegroundColor DarkGray
 }
 if ($addrs) {
     $best = ($addrs | Sort-Object { -[int]$_.linkLocal } | Select-Object -First 1).ip
-    Write-Host "  Internetsiz PC icin: " -NoNewline; Write-Host "irm http://${best}:$Port/s | iex" -ForegroundColor Yellow
+    Write-Host "  $(T 'offline')" -NoNewline; Write-Host "irm http://${best}:$Port/s | iex" -ForegroundColor Yellow
 }
-if ($fwRule) { Write-Host '  Guvenlik duvari: gecici izin eklendi' -ForegroundColor Green }
-else { Write-Host '  Guvenlik duvari uyarisi cikarsa "Ortak/Public" agler icin de izin verin (veya PowerShell''i yonetici acin).' -ForegroundColor DarkYellow }
-Write-Host '  Kapatmak icin LanXfer penceresini kapatin veya Ctrl+C' -ForegroundColor DarkGray
+if ($fwRule) { Write-Host "  $(T 'fwOk')" -ForegroundColor Green }
+else { Write-Host "  $(T 'fwWarn')" -ForegroundColor DarkYellow }
+Write-Host "  $(T 'quit')" -ForegroundColor DarkGray
 Write-Host ''
 
 # Arayuzu adres cubugu olmayan, ayri bir uygulama penceresinde ac (Edge/Chrome --app modu).
@@ -739,12 +838,12 @@ try {
         while ($S.Log.TryDequeue([ref]$m)) { Write-Host "  $m" }
         for ($i = $jobs.Count - 1; $i -ge 0; $i--) {
             if ($jobs[$i].h.IsCompleted) {
-                try { [void]$jobs[$i].ps.EndInvoke($jobs[$i].h) } catch { Write-Host "  HATA: $($_.Exception.Message)" -ForegroundColor Red }
+                try { [void]$jobs[$i].ps.EndInvoke($jobs[$i].h) } catch { Write-Host ("  " + ((T 'err') -f $_.Exception.Message)) -ForegroundColor Red }
                 $jobs[$i].ps.Dispose()
                 $jobs.RemoveAt($i)
             }
         }
-        if ($uiProc -and $uiProc.HasExited) { Write-Host '  Pencere kapatildi.' -ForegroundColor DarkGray; break }
+        if ($uiProc -and $uiProc.HasExited) { Write-Host "  $(T 'winClosed')" -ForegroundColor DarkGray; break }
         Start-Sleep -Milliseconds 30
     }
 }
@@ -761,6 +860,6 @@ finally {
         Start-Sleep -Milliseconds 500
         Remove-Item -LiteralPath $uiProfile -Recurse -Force -ErrorAction SilentlyContinue
     }
-    Write-Host '  LanXfer kapatildi.' -ForegroundColor Cyan
+    Write-Host "  $(T 'stopped')" -ForegroundColor Cyan
 }
 }

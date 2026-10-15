@@ -43,6 +43,11 @@ Optional environment variables, set before running:
 | `LANXFER_UDP` | `8766` | Auto-discovery (UDP broadcast) port |
 | `LANXFER_DIR` | `%USERPROFILE%\Downloads\LanXfer` | Folder for received files |
 | `LANXFER_NOBROWSER` | — | Set to `1` to not open the app window |
+| `LANXFER_LANG` | Windows language | `en` or `tr` |
+
+## Languages
+
+LanXfer speaks **English** and **Turkish** (Türkçe). It starts in your Windows display language (Turkish if Windows is Turkish, English otherwise). Switch any time with the **TR / EN** toggle in the app's top-right corner — the console messages switch along with it.
 
 ```powershell
 $env:LANXFER_DIR = 'D:\Incoming'; irm https://raw.githubusercontent.com/OgeaN/lanxfer/main/lanxfer.ps1 | iex
