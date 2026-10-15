@@ -9,7 +9,7 @@ Ethernet kablosuyla (veya aynı ağdaki) iki Windows bilgisayar arasında **kuru
 2. **Her iki PC'de** PowerShell açın (tercihen *Yönetici olarak*) ve çalıştırın:
 
 ```powershell
-irm https://raw.githubusercontent.com/<kullanici>/lanxfer/main/lanxfer.ps1 | iex
+irm https://raw.githubusercontent.com/OgeaN/lanxfer/main/lanxfer.ps1 | iex
 ```
 
 3. Tarayıcıda arayüz açılır, karşı PC birkaç saniye içinde otomatik bulunur ve bağlanılır.
@@ -37,7 +37,7 @@ Betik doğrudan kablo üzerinden diğer PC'den indirilir.
 | `LANXFER_NOBROWSER` | — | `1` ise tarayıcı otomatik açılmaz |
 
 ```powershell
-$env:LANXFER_DIR = 'D:\Gelen'; irm https://raw.githubusercontent.com/<kullanici>/lanxfer/main/lanxfer.ps1 | iex
+$env:LANXFER_DIR = 'D:\Gelen'; irm https://raw.githubusercontent.com/OgeaN/lanxfer/main/lanxfer.ps1 | iex
 ```
 
 ## Nasıl çalışır

@@ -1,6 +1,6 @@
 # LanXfer - Ethernet kablosu / yerel ag uzerinden iki PC arasinda dosya aktarimi.
 # Kurulum gerektirmez, tamamen RAM'de calisir:
-#   irm https://raw.githubusercontent.com/<kullanici>/lanxfer/main/lanxfer.ps1 | iex
+#   irm https://raw.githubusercontent.com/OgeaN/lanxfer/main/lanxfer.ps1 | iex
 # Ayarlar (istege bagli, calistirmadan once):
 #   $env:LANXFER_PORT = 8765        HTTP portu
 #   $env:LANXFER_DIR  = 'D:\Gelen'  gelen dosyalarin klasoru
