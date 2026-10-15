@@ -4,7 +4,7 @@
 # Ayarlar (istege bagli, calistirmadan once):
 #   $env:LANXFER_PORT = 8765        HTTP portu
 #   $env:LANXFER_DIR  = 'D:\Gelen'  gelen dosyalarin klasoru
-#   $env:LANXFER_NOBROWSER = 1      tarayiciyi otomatik acma
+#   $env:LANXFER_NOBROWSER = 1      uygulama penceresini acma
 & {
 $ErrorActionPreference = 'Stop'
 $Version = '1.0.0'
@@ -300,6 +300,8 @@ $Html = @'
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>LanXfer</title>
+<meta name="theme-color" content="#0f1115">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%234f8cff'/%3E%3Cstop offset='1' stop-color='%238a5cff'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='16' fill='url(%23g)'/%3E%3Cpath d='M16 24h28l-7-7M48 40H20l7 7' stroke='white' stroke-width='5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <style>
 :root{
   --bg:#0f1115;--panel:#171a21;--panel2:#1d212a;--line:#2a2f3a;--text:#e7e9ee;--muted:#8b93a3;
@@ -690,10 +692,37 @@ if ($addrs) {
 }
 if ($fwRule) { Write-Host '  Guvenlik duvari: gecici izin eklendi' -ForegroundColor Green }
 else { Write-Host '  Guvenlik duvari uyarisi cikarsa "Ortak/Public" agler icin de izin verin (veya PowerShell''i yonetici acin).' -ForegroundColor DarkYellow }
-Write-Host '  Kapatmak icin Ctrl+C' -ForegroundColor DarkGray
+Write-Host '  Kapatmak icin LanXfer penceresini kapatin veya Ctrl+C' -ForegroundColor DarkGray
 Write-Host ''
 
-if (-not $env:LANXFER_NOBROWSER) { Start-Process "http://127.0.0.1:$Port/" }
+# Arayuzu adres cubugu olmayan, ayri bir uygulama penceresinde ac (Edge/Chrome --app modu).
+# Ayri profil klasoru sayesinde pencere kendi surecinde calisir; kapaninca sunucu da kapanir.
+$uiProc = $null
+$uiProfile = Join-Path $env:TEMP "lanxfer-ui-$Port"
+if (-not $env:LANXFER_NOBROWSER) {
+    $url = "http://127.0.0.1:$Port/"
+    $app = @(
+        "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe"
+        "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe"
+        "$env:ProgramFiles\Google\Chrome\Application\chrome.exe"
+        "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe"
+    ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+    if ($app) {
+        $w = 1120; $h = 840
+        try {
+            Add-Type -AssemblyName System.Windows.Forms
+            $wa = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+            $w = [Math]::Min($w, $wa.Width - 40); $h = [Math]::Min($h, $wa.Height - 40)
+            $pos = "--window-position=$([int]($wa.X + ($wa.Width - $w) / 2)),$([int]($wa.Y + ($wa.Height - $h) / 2))"
+        }
+        catch { $pos = '--window-position=100,60' }
+        $uiProc = Start-Process -FilePath $app -PassThru -ArgumentList @(
+            "--app=$url", "--user-data-dir=`"$uiProfile`"", "--window-size=$w,$h", $pos,
+            '--no-first-run', '--no-default-browser-check', '--disable-sync', '--disable-features=Translate,msEdgeSidebarV2'
+        )
+    }
+    else { Start-Process $url }
+}
 
 $jobs = [Collections.Generic.List[object]]::new()
 $handlerText = $Handler.ToString()
@@ -715,6 +744,7 @@ try {
                 $jobs.RemoveAt($i)
             }
         }
+        if ($uiProc -and $uiProc.HasExited) { Write-Host '  Pencere kapatildi.' -ForegroundColor DarkGray; break }
         Start-Sleep -Milliseconds 30
     }
 }
@@ -726,6 +756,11 @@ finally {
     $disco.Dispose(); $discoRs.Dispose()
     $pool.Dispose()
     if ($fwRule) { Remove-NetFirewallRule -Name "$fwRule-tcp", "$fwRule-udp" -ErrorAction SilentlyContinue }
+    if ($uiProc) {
+        if (-not $uiProc.HasExited) { try { $uiProc.CloseMainWindow() | Out-Null; $uiProc.WaitForExit(3000) | Out-Null } catch {} }
+        Start-Sleep -Milliseconds 500
+        Remove-Item -LiteralPath $uiProfile -Recurse -Force -ErrorAction SilentlyContinue
+    }
     Write-Host '  LanXfer kapatildi.' -ForegroundColor Cyan
 }
 }
